@@ -234,7 +234,10 @@ def _beta_log_kernel(a, b, value):
     """Beta log density at ``value`` in ``[0, 1]``, finite off the open interval."""
     log_low = jnp.log(jnp.where(value > 0, value, 1.0))
     log_high = jnp.log1p(-jnp.where(value < 1, value, 0.0))
-    return (a - 1) * log_low + (b - 1) * log_high - betaln(a, b)
+    # betaln may drop the weak type of Python-number shapes, which would
+    # promote a float32 value to float64; cast it to the promoted dtype.
+    log_norm = betaln(a, b).astype(jnp.result_type(a, b, value))
+    return (a - 1) * log_low + (b - 1) * log_high - log_norm
 
 
 @jax.custom_jvp
