@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/CoreySpohn/hwoutils
-    rev: 7ea5d77
+    rev: 4594693fd3c6e348bc779c1a0a1b44fc6ee8c7d1
     hooks:
       - id: no-internal-refs
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -21,7 +21,7 @@ repos:
     hooks:
       - id: codespell
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
+    rev: v4.5.0
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
