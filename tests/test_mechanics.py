@@ -7,6 +7,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from hwoutils.leaves import canonical
+from hwoutils.testing import assert_precision_closed
 
 import priorities as pr
 from priorities.testing import icdf_round_trip
@@ -73,6 +75,109 @@ def test_batched_parameters_equal_a_map_over_dists():
     np.testing.assert_array_max_ulp(batched, mapped, maxulp=4)
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+def test_event_normal_accepts_integral_inputs(precision, compiled):
+    """Integral event inputs give the same result as their floating equivalents.
+
+    Fails if the status or quantile masks try to store infinities in an
+    integer array. The floating references use the same exact coordinates.
+
+    Args:
+        precision: Floating dtype for the lane.
+        compiled: Whether to evaluate under jit.
+    """
+    dist = pr.MultivariateNormal(np.zeros(2, precision), np.eye(2, dtype=precision))
+    value = np.array([1, 2], dtype=np.int32)
+    for method in (dist.log_prob, dist.cdf):
+        evaluate = jax.jit(lambda arg, fn=method: fn(arg)) if compiled else method
+        actual = evaluate(value)
+        assert actual.dtype == precision
+        np.testing.assert_array_equal(actual, evaluate(value.astype(precision)))
+
+    one_dimensional = pr.MultivariateNormal(
+        np.zeros(1, precision), np.eye(1, dtype=precision)
+    )
+    evaluate = (
+        jax.jit(lambda q: one_dimensional.icdf(q)) if compiled else one_dimensional.icdf
+    )
+    for unit, expected in ((0, -np.inf), (1, np.inf), (2, np.nan)):
+        actual = evaluate(np.array([unit], dtype=np.int32))
+        assert actual.dtype == precision
+        np.testing.assert_array_equal(actual, [expected])
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_safe_logs_use_the_parameter_and_input_precision(precision, compiled):
+    """Safe logarithms evaluate integers and narrower floats in working precision.
+
+    The integer is one beyond the last consecutively representable float32
+    integer. Compare with an explicit promotion before evaluation. The
+    Rayleigh scale keeps both the log and quadratic terms visible.
+
+    Args:
+        precision: Floating dtype for the lane.
+        compiled: Whether to evaluate under jit.
+    """
+    value = np.int32(2**24 + 1)
+    array = precision.type
+    normal = pr.LogNormal(array(16), array(0.75))
+    methods = (
+        pr.LogUniform(array(0.5), array(2**26)).log_prob,
+        normal.log_prob,
+        normal.cdf,
+        pr.Rayleigh(array(value)).log_prob,
+    )
+    for method in methods:
+        evaluate = jax.jit(lambda arg, fn=method: fn(arg)) if compiled else method
+        for arg in (value, np.float32(16_777_214)):
+            actual = evaluate(arg)
+            assert actual.dtype == precision
+            np.testing.assert_array_equal(actual, evaluate(array(arg)))
+
+
+@pytest.mark.parametrize("name", ["mixture", "event_mixture"])
+@pytest.mark.parametrize("high", [False, True])
+def test_mixture_preserves_jax_categorical_draws(name, high, dists, precision):
+    """Seeded scalar and event draws exactly preserve both JAX Gumbel modes.
+
+    Args:
+        name: Scalar or event mixture fixture.
+        high: Whether JAX's high dynamic range mode is active.
+        dists: Session distribution fixtures.
+        precision: Floating dtype for the lane.
+    """
+    dist = dists[name]
+    count = 20_000
+    key = jax.random.key(0)
+
+    def reference(draw_key):
+        key_index, key_draw = jax.random.split(draw_key)
+        indices = jax.random.categorical(
+            key_index,
+            dist.mixing_logits,
+            shape=(count,),
+            mode="high" if high else "low",
+        )
+        return dist.component_distribution.sample(key_draw, (count,))[
+            jnp.arange(count), indices
+        ]
+
+    option = "jax_high_dynamic_range_gumbel"
+    previous = jax.config.jax_high_dynamic_range_gumbel
+    jax.config.update(option, high)
+    try:
+        if precision == np.dtype("float64"):
+            narrow = canonical(dist, precision="float32")
+            assert_precision_closed(lambda model, k: model.sample(k, (2,)), narrow, key)
+        np.testing.assert_array_equal(dist.sample(key, (count,)), reference(key))
+        np.testing.assert_array_equal(
+            jax.jit(lambda draw_key: dist.sample(draw_key, (count,)))(key),
+            jax.jit(reference)(key),
+        )
+    finally:
+        jax.config.update(option, previous)
+
+
 def test_parameters_are_array_leaves_and_do_not_retrace():
     """A two-parameter distribution has two leaves, and new values reuse one trace.
 
@@ -115,6 +220,7 @@ FLOAT32_DISTRIBUTIONS = {
 
 
 @pytest.mark.parametrize("name", list(FLOAT32_DISTRIBUTIONS))
+@pytest.mark.float64_only(reason="compares weak float64 parameters with float32 inputs")
 def test_float32_in_gives_float32_out(name):
     """With x64 on, a record built from Python numbers returns its argument's dtype.
 
@@ -132,7 +238,7 @@ def test_float32_in_gives_float32_out(name):
     assert dist.sample(jax.random.key(0)).dtype == jnp.float64
 
 
-def test_strongly_typed_parameters_set_the_dtype():
+def test_strongly_typed_parameters_set_the_dtype(precision):
     """The output dtype is the promotion of the argument and the parameters.
 
     Fails if float32 parameters are promoted by a draw, or float64 parameters
@@ -141,9 +247,9 @@ def test_strongly_typed_parameters_set_the_dtype():
     key = jax.random.key(0)
     single = pr.Normal(jnp.float32(0.0), jnp.float32(1.0))
     assert single.sample(key).dtype == jnp.float32
-    assert single.log_prob(jnp.float64(0.3)).dtype == jnp.float64
-    double = pr.Normal(jnp.float64(0.0), jnp.float64(1.0))
-    assert double.log_prob(jnp.float32(0.3)).dtype == jnp.float64
+    assert single.log_prob(jnp.asarray(0.3, precision)).dtype == precision
+    native = pr.Normal(jnp.asarray(0.0, precision), jnp.asarray(1.0, precision))
+    assert native.log_prob(jnp.float32(0.3)).dtype == precision
     # A list parameter is a strongly typed array, so a float32 mixture is
     # built from float32 arrays.
     weights, locs = jnp.zeros(2, jnp.float32), jnp.array([0.0, 1.0], jnp.float32)

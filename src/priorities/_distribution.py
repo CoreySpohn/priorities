@@ -120,39 +120,94 @@ def draw_spec(dist: AbstractDistribution, shape: tuple[int, ...]):
     return tuple(shape) + batch, jnp.result_type(*leaves)
 
 
+def _constant(ref, value):
+    """Build a scalar at the reference dtype, preserving its weak type."""
+    return jnp.full_like(ref, jnp.result_type(ref).type(value), shape=())
+
+
+def _mask_fill(mask, value, fill):
+    return jnp.where(mask, value, _constant(value, fill))
+
+
+def _inexact_arg(value, *parameters):
+    """Promote an argument before a floating operation or sentinel fill."""
+    return jnp.asarray(value, dtype=jnp.result_type(value, *parameters, 1.0))
+
+
+def _uniform(key, shape, dtype, minval):
+    """Draw units with both endpoints typed to match the draw."""
+    low, high = dtype.type(minval), dtype.type(1)
+    return jax.random.uniform(key, shape, dtype, minval=low, maxval=high)
+
+
 def bounded(dist: AbstractDistribution, valid, low, high) -> tuple[Array, Array]:
-    """Broadcast scalar-distribution bounds over the batch; NaN where not ``valid``."""
+    """Broadcast scalar-distribution bounds over the batch.
+
+    Args:
+        dist: Distribution supplying the batch shape and precision.
+        valid: Mask of parameters within the distribution's domain.
+        low: Lower bound, scalar or array.
+        high: Upper bound, scalar or array.
+
+    Returns:
+        Lower and upper bounds, each NaN where the parameters are invalid.
+    """
     shape, _ = draw_spec(dist, ())
-    low, high = (jnp.where(valid, bound, jnp.nan) for bound in (low, high))
-    return jnp.broadcast_to(low, shape), jnp.broadcast_to(high, shape)
+    ref = sum(jnp.zeros_like(x, shape=()) for x in jax.tree_util.tree_leaves(dist))
+    bounds = (x if isinstance(x, Array) else _constant(ref, x) for x in (low, high))
+    return tuple(jnp.broadcast_to(_mask_fill(valid, x, jnp.nan), shape) for x in bounds)
 
 
 def finish(
-    dist: AbstractDistribution, out, arg=0.0, inside=True, fill=jnp.nan
+    dist: AbstractDistribution, out, arg=None, inside=True, fill=jnp.nan
 ) -> Array:
     """Mask the result of a scalar distribution.
 
-    ``fill`` replaces ``out`` outside ``inside`` and for invalid parameters;
-    NaN replaces it where ``arg`` or a parameter is NaN.
+    Args:
+        dist: Distribution supplying the parameter domain.
+        out: Unmasked result.
+        arg: Evaluation argument, or None for a draw.
+        inside: Mask of values inside the domain of the evaluation.
+        fill: Value outside that domain or for invalid parameters.
+
+    Returns:
+        The masked result, with NaN where the argument or a parameter is NaN.
     """
-    inputs = (arg, *jax.tree_util.tree_leaves(dist))
+    inputs = jax.tree.leaves((arg, dist))
     nan = sum(jnp.isnan(x) for x in inputs) > 0
-    out = jnp.where(is_valid(dist) & inside, debug_check(dist, out), fill)
+    out = _mask_fill(is_valid(dist) & inside, debug_check(dist, out), fill)
     # Adding typed zeros promotes to the inputs' dtype and keeps weak types.
-    return jnp.where(nan, jnp.nan, out) + sum(jnp.zeros_like(x) for x in inputs)
+    return _mask_fill(~nan, out, jnp.nan) + sum(jnp.zeros_like(x) for x in inputs)
 
 
 def unit_draws(dist: AbstractDistribution, key: Array, shape: tuple[int, ...]) -> Array:
-    """Draw uniforms on the open unit interval for a quantile-based sample."""
+    """Draw uniforms on the open unit interval for a quantile-based sample.
+
+    Args:
+        dist: Distribution supplying the batch shape and precision.
+        key: PRNG key.
+        shape: Sample shape preceding the batch.
+
+    Returns:
+        Uniform samples in the distribution's dtype.
+    """
     shape, dtype = draw_spec(dist, shape)
-    tiny = jnp.finfo(dtype).tiny
-    return jax.random.uniform(key, shape, dtype, minval=tiny)
+    return _uniform(key, shape, dtype, jnp.finfo(dtype).tiny)
 
 
 def quantile(dist: AbstractDistribution, out, unit) -> Array:
-    """Finish a scalar ``icdf``: exact endpoints, NaN off ``[0, 1]``."""
+    """Finish a scalar inverse CDF.
+
+    Args:
+        dist: Distribution supplying the support and parameter domain.
+        out: Unmasked quantiles.
+        unit: Unit probabilities at which the quantiles were evaluated.
+
+    Returns:
+        Quantiles clipped to the support, with exact endpoints and NaN off
+        the unit interval.
+    """
     low, high = dist.support()
-    out = jnp.where(
-        unit <= 0, low, jnp.where(unit >= 1, high, jnp.clip(out, low, high))
-    )
+    inside = jnp.clip(out, low, high)
+    out = jnp.where(unit <= 0, low, jnp.where(unit >= 1, high, inside))
     return finish(dist, out, unit, (unit >= 0) & (unit <= 1))

@@ -26,6 +26,7 @@ test = [
     "scipy>=1.15",
     "pytest>=7.3.2",
     "hypothesis>=6.79.1",
+    "hwoutils[jax]>=3.0.0",
     "ineedvalidation>=1.0",
     "pytest-xdist>=3.8.0",
     "pytest-testmon>=2.0.7",
@@ -58,7 +59,7 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D"]
-# The debug flag and x64 are set before the package is imported.
+# The debug flag is set before the package is imported.
 "tests/conftest.py" = ["D", "E402"]
 # Each record method implements the AbstractDistribution method of the same name, which
 # carries the contract; the record's class docstring states what is specific.
@@ -72,6 +73,8 @@ packages = ["src/priorities"]
 exclude = ["/tests", "/.github"]
 
 [tool.pytest.ini_options]
+addopts = "-p hwoutils.testing.precision"
+default_precision = "float64"
 filterwarnings = ["error"]
 testpaths = ["tests"]
 markers = [

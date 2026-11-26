@@ -12,6 +12,8 @@ from jax.scipy.special import betainc, betaln, erf, erfinv, ndtr, ndtri
 
 from priorities._distribution import (
     AbstractDistribution,
+    _inexact_arg,
+    _mask_fill,
     as_float,
     bounded,
     draw_spec,
@@ -79,8 +81,16 @@ class LogUniform(AbstractDistribution):
         return jnp.log(self.high / self.low)
 
     def log_prob(self, value):
+        """Return the log density, using a safe log argument off support.
+
+        Args:
+            value: Values at which to evaluate the density.
+
+        Returns:
+            Log densities with negative infinity outside the support.
+        """
         inside = (value >= self.low) & (value <= self.high)
-        safe = jnp.where(inside, value, 1.0)
+        safe = _mask_fill(inside, _inexact_arg(value, self.low, self.high), 1.0)
         out = -jnp.log(safe) - jnp.log(self._log_ratio())
         return finish(self, out, value, inside, -jnp.inf)
 
@@ -147,7 +157,8 @@ class LogNormal(AbstractDistribution):
 
     def _z(self, value):
         """Standardized ``log(value)`` and the log itself, safe off-support."""
-        log_value = jnp.log(jnp.where(value > 0, value, 1.0))
+        value = _inexact_arg(value, self.loc, self.scale)
+        log_value = jnp.log(_mask_fill(value > 0, value, 1.0))
         return (log_value - self.loc) / self.scale, log_value
 
     def log_prob(self, value):
@@ -160,7 +171,15 @@ class LogNormal(AbstractDistribution):
         return finish(self, jnp.exp(self.loc + self.scale * noise))
 
     def cdf(self, value):
-        return finish(self, jnp.where(value > 0, ndtr(self._z(value)[0]), 0.0), value)
+        """Evaluate the cumulative probability below each value.
+
+        Args:
+            value: Values at which to evaluate the CDF.
+
+        Returns:
+            Cumulative probabilities, including zero for nonpositive values.
+        """
+        return finish(self, _mask_fill(value > 0, ndtr(self._z(value)[0]), 0.0), value)
 
     def icdf(self, q):
         return quantile(self, jnp.exp(self.loc + self.scale * ndtri(q)), q)
@@ -214,8 +233,16 @@ class Rayleigh(AbstractDistribution):
         return bounded(self, self.scale > 0, 0.0, jnp.inf)
 
     def log_prob(self, value):
+        """Evaluate the log density on the open positive half-line.
+
+        Args:
+            value: Values at which to evaluate the density.
+
+        Returns:
+            Log densities with negative infinity outside the support.
+        """
         inside = (value > 0) & (value < jnp.inf)
-        safe = jnp.where(inside, value, 1.0)
+        safe = _mask_fill(inside, _inexact_arg(value, self.scale), 1.0)
         out = jnp.log(safe) - 2 * jnp.log(self.scale) - 0.5 * (safe / self.scale) ** 2
         return finish(self, out, value, inside, -jnp.inf)
 
@@ -232,8 +259,8 @@ class Rayleigh(AbstractDistribution):
 
 def _beta_log_kernel(a, b, value):
     """Beta log density at ``value`` in ``[0, 1]``, finite off the open interval."""
-    log_low = jnp.log(jnp.where(value > 0, value, 1.0))
-    log_high = jnp.log1p(-jnp.where(value < 1, value, 0.0))
+    log_low = jnp.log(_mask_fill(value > 0, value, 1.0))
+    log_high = jnp.log1p(-_mask_fill(value < 1, value, 0.0))
     # betaln may drop the weak type of Python-number shapes, which would
     # promote a float32 value to float64; cast it to the promoted dtype.
     log_norm = betaln(a, b).astype(jnp.result_type(a, b, value))
@@ -312,22 +339,35 @@ class Beta(AbstractDistribution):
         return finish(self, out, value, low & high, -jnp.inf)
 
     def sample(self, key, sample_shape=()):
+        """Draw values using the positive Beta shapes.
+
+        Args:
+            key: PRNG key.
+            sample_shape: Shape preceding the broadcast batch.
+
+        Returns:
+            Beta draws, with NaN where the shapes are invalid.
+        """
         sample_shape, dtype = draw_spec(self, sample_shape)
         # The gamma rejection sampler behind the draw needs positive shapes.
         a, b = (
-            jnp.where(shape_ > 0, shape_, 1.0)
+            _mask_fill(shape_ > 0, shape_, 1.0)
             for shape_ in (self.concentration1, self.concentration0)
         )
         return finish(self, jax.random.beta(key, a, b, sample_shape, dtype))
 
     def cdf(self, value):
-        return finish(
-            self,
-            betainc(
-                self.concentration1, self.concentration0, jnp.clip(value, 0.0, 1.0)
-            ),
-            value,
-        )
+        """Evaluate the cumulative probability below each value.
+
+        Args:
+            value: Values at which to evaluate the CDF.
+
+        Returns:
+            Cumulative probabilities, clipped to the lower and upper tails.
+        """
+        unit = jnp.minimum(jnp.maximum(value, 0.0), 1.0)
+        out = betainc(self.concentration1, self.concentration0, unit)
+        return finish(self, out, value)
 
     def icdf(self, q):
         return quantile(

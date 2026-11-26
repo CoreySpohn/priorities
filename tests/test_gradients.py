@@ -5,7 +5,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import CHOLESKY, MEAN
-from hypothesis import given
+from hwoutils.testing import ulps
+from hypothesis import example, given
 from hypothesis import strategies as st
 from jax.test_util import check_grads
 
@@ -40,6 +41,9 @@ DENSITIES = {
 
 
 @pytest.mark.parametrize("name", list(DENSITIES))
+@pytest.mark.float64_only(
+    reason="fixed central-difference reference step and tolerance"
+)
 def test_log_prob_gradients_match_finite_differences(name):
     """log_prob is differentiable in the value and in every parameter.
 
@@ -65,19 +69,21 @@ def test_log_prob_gradients_match_finite_differences(name):
     )
 
 
-def test_quantile_derivative_is_the_reciprocal_density(unit_dist):
+def test_quantile_derivative_is_the_reciprocal_density(unit_dist, precision):
     """d icdf / du equals 1 / pdf at the returned value.
 
     Fails if the derivative through the Beta root search is the exact zero
     that autodiff gives for a bisection loop, which would silently remove
-    reparameterized gradients of a truncated draw. Tolerance: rtol 1e-10,
-    floating-point (both sides are closed forms of the same value).
+    reparameterized gradients of a truncated draw. Allow 64 rounding units
+    at one for the inverse special functions and the density normalization.
     """
     unit = jnp.array([0.02, 0.3, 0.5, 0.9, 0.99])
     slope = jax.vmap(jax.grad(unit_dist.icdf))(unit)
     density = jnp.exp(unit_dist.log_prob(unit_dist.icdf(unit)))
     assert bool(jnp.all(slope > 0))
-    np.testing.assert_allclose(slope * density, 1.0, rtol=1e-10, atol=0)
+    np.testing.assert_allclose(
+        slope * density, 1.0, rtol=0, atol=float(ulps(64, precision.type(1)))
+    )
 
 
 def test_beta_shape_gradients(dists):
@@ -85,14 +91,16 @@ def test_beta_shape_gradients(dists):
 
     Fails if a shape gradient through the distribution function or the
     quantile silently returns zero, or if the plain Beta loses the gradient a
-    hierarchical fit needs. The density gradient is the digamma closed form;
-    tolerance rtol 1e-12, floating-point.
+    hierarchical fit needs. Allow 32 rounding units for the log, two digamma
+    evaluations and their difference.
     """
     a, b, value = 0.867, 3.03, 0.3
     digamma = jax.scipy.special.digamma
     expected = jnp.log(value) - digamma(a) + digamma(a + b)
     got = jax.grad(lambda shape: pr.Beta(shape, b).log_prob(value))(a)
-    np.testing.assert_allclose(got, expected, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(
+        got, expected, rtol=0, atol=float(ulps(32, jnp.maximum(1.0, jnp.abs(expected))))
+    )
     with pytest.raises(ValueError, match="not differentiable in its shapes"):
         jax.grad(lambda shape: pr.Beta(shape, b).icdf(0.3))(a)
     with pytest.raises(ValueError, match=r"[Bb]etainc"):
@@ -107,12 +115,13 @@ BOUNDED = ["normal", "rayleigh", "truncated_upper", "beta", "truncated_beta", "m
 
 
 @pytest.mark.parametrize("name", [*BOUNDED, "multivariate_normal"])
-def test_log_volume_is_the_log_jacobian_of_from_real(name, dists):
+def test_log_volume_is_the_log_jacobian_of_from_real(name, dists, precision):
     """log_volume equals the autodiff log determinant of from_real.
 
     Fails if a transform and its volume term disagree (a missing Jacobian in
     a sampler's density). Covers all four bounds options and the sum over the
-    event axis. Tolerance: rtol 1e-10 with atol 1e-12, floating-point.
+    event axis. Allow 64 rounding units at one or the reference magnitude for
+    the sigmoid, logarithms, event reduction and inversion near the cuts.
     """
     dist = dists[name]
     x = jnp.array([-1.3, 0.2, 2.1])
@@ -120,10 +129,11 @@ def test_log_volume_is_the_log_jacobian_of_from_real(name, dists):
     jacobian = jax.jacfwd(lambda x: pr.from_real(dist, x)[0])(x)
     expected = jnp.log(jnp.abs(jnp.diagonal(jacobian)))
     expected = expected.sum() if dist.event_dim else expected
-    np.testing.assert_allclose(log_volume, expected, rtol=1e-10, atol=1e-12)
-    np.testing.assert_allclose(pr.to_real(dist, value), x, rtol=1e-10, atol=1e-12)
-    np.testing.assert_allclose(
-        pr.real_log_prob(dist, x), dist.log_prob(value) + log_volume, rtol=1e-14
+    bound = float(ulps(64, precision.type(1)))
+    np.testing.assert_allclose(log_volume, expected, rtol=bound, atol=bound)
+    np.testing.assert_allclose(pr.to_real(dist, value), x, rtol=bound, atol=bound)
+    np.testing.assert_array_equal(
+        pr.real_log_prob(dist, x), dist.log_prob(value) + log_volume
     )
 
 
@@ -145,16 +155,33 @@ def test_bounds_follow_the_cut_sides(dists):
 
 @pytest.mark.parametrize("name", BOUNDED)
 @given(x=st.floats(min_value=-20.0, max_value=20.0))
-def test_from_real_lands_in_the_support(name, dists, x):
+@example(x=-20.0)
+def test_from_real_lands_in_the_support(name, dists, precision, x):
     """Any real coordinate maps into the support and back to itself.
 
     Fails if a transform leaves the support or the pair is not an inverse.
-    The round trip is compared in the value, where it is well conditioned;
-    tolerance rtol 1e-12, floating-point.
+    Preserve the float64 relative tolerance of 1e-12. In float32, the
+    Rayleigh log/exp round trip has relative error proportional to the
+    rounding in log(value), plus the rounding of exp. For the other
+    transforms, allow eight rounding units at one or the value scale
+    for the logarithms, sigmoid, and the arithmetic at the cuts.
+
+    Args:
+        name: Distribution fixture name.
+        dists: Session distribution fixtures.
+        precision: Floating dtype for the lane.
+        x: Generated real coordinate.
     """
     dist = dists[name]
     low, high = dist.support()
     value, log_volume = pr.from_real(dist, jnp.asarray(x))
     assert bool((value >= low) & (value <= high)) and bool(jnp.isfinite(log_volume))
     again, _ = pr.from_real(dist, pr.to_real(dist, value))
-    np.testing.assert_allclose(again, value, rtol=1e-12, atol=0)
+    if precision == np.dtype("float64"):
+        np.testing.assert_allclose(again, value, rtol=1e-12, atol=0)
+    elif name == "rayleigh":
+        relative = float(ulps(2, 1 + jnp.abs(jnp.log(value))))
+        np.testing.assert_allclose(again, value, rtol=relative, atol=0)
+    else:
+        bound = float(ulps(8, jnp.maximum(1.0, jnp.abs(value))))
+        np.testing.assert_allclose(again, value, rtol=0, atol=bound)
