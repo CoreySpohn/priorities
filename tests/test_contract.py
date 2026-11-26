@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import BUILDERS, CHOLESKY, DIRECT_DRAWS, MEAN, WEIGHTS
+from hwoutils.testing import ulps
 
 import priorities as pr
 from priorities.testing import (
@@ -26,6 +27,7 @@ CHECKED_BY_DRAWS = [*DIRECT_DRAWS, "multivariate_normal", "event_mixture"]
 
 
 @pytest.mark.parametrize("name", list(BUILDERS))
+@pytest.mark.float64_only(reason="uses the float64 check_distribution reference bounds")
 def test_distribution_contract(name, dists):
     """Every record passes check_distribution (see its docstring for the checks).
 
@@ -40,6 +42,24 @@ def test_distribution_contract(name, dists):
     """
     count = N_DRAWS if name in CHECKED_BY_DRAWS else QUANTILE_DRAWS
     check_distribution(dists[name], jax.random.key(0), n_draws=count)
+
+
+def test_beta_draws_follow_the_configured_shapes(dists, precision):
+    """Real Beta draws agree with the configured CDF in both lanes.
+
+    The one-sample KS threshold is 2.69 / sqrt(n) for a false-rejection
+    rate of 1e-6. With 10,000 draws at seed zero, doubling the first
+    shape moves the distance above that threshold.
+
+    Args:
+        dists: Session distribution fixtures.
+        precision: Floating dtype for the lane.
+    """
+    count = 10_000
+    dist = dists["beta"]
+    draws = dist.sample(jax.random.key(0), (count,))
+    assert draws.dtype == precision
+    assert float(ks_distance(dist, draws)) < KS_SCALE / math.sqrt(count)
 
 
 MUTANTS = {
@@ -95,6 +115,7 @@ def test_event_mixture_draws_follow_a_projection(dists):
     assert float(ks_distance(projected, wrong)) > KS_SCALE / math.sqrt(N_DRAWS)
 
 
+@pytest.mark.float64_only(reason="the small-shape lower tail underflows in float32")
 def test_beta_quantile_keeps_the_lower_tail_for_a_small_shape():
     """The unit round trip holds to 1e-30 for a Beta with shape 0.2.
 
@@ -132,6 +153,7 @@ class Logistic(pr.AbstractDistribution):
         raise NotImplementedError("Logistic has no icdf here")
 
 
+@pytest.mark.float64_only(reason="uses the float64 quadrature reference tolerance")
 def test_subclass_without_distribution_function_is_checked_by_quadrature():
     """check_distribution integrates a subclass that has no cdf, and refuses a mutant.
 
@@ -178,14 +200,14 @@ ENDPOINTS = [
 
 @pytest.mark.parametrize(("name", "value", "expected"), ENDPOINTS)
 def test_endpoint_is_in_the_support_when_the_density_is_finite(
-    name, value, expected, dists
+    name, value, expected, dists, precision
 ):
     """log_prob at each support endpoint matches the per-record table.
 
     Fails if a closed endpoint is excluded (a draw equal to the bound would
     get zero density) or an open one included (NaN or +inf at a singular
-    point). Finite entries are closed forms typed here; tolerance rtol 1e-14,
-    floating-point. Infinite entries are exact, eager and under jit.
+    point). Allow 32 rounding units for the parameter casts, ratios and
+    logarithms in the finite closed forms. Infinite entries are exact.
     """
     dist = dists[name]
     for evaluate in (dist.log_prob, eqx.filter_jit(dist.log_prob)):
@@ -193,26 +215,34 @@ def test_endpoint_is_in_the_support_when_the_density_is_finite(
         if math.isinf(expected):
             assert got == expected
         else:
-            np.testing.assert_allclose(got, expected, rtol=1e-14, atol=0)
+            np.testing.assert_allclose(
+                got, expected, rtol=0, atol=float(ulps(32, precision.type(expected)))
+            )
 
 
-def test_cut_and_unit_shape_endpoints_are_closed(dists):
+def test_cut_and_unit_shape_endpoints_are_closed(dists, precision):
     """A finite cut is closed, and a Beta endpoint with shape one is closed.
 
     Fails if TruncatedDistribution drops the density at its own cut, so that
     icdf(1) lands on a point of zero density. Expected values are the
-    base density minus the log mass, typed from closed forms; rtol 1e-12,
-    floating-point.
+    base density minus the log mass. Allow 32 rounding units at the Beta log
+    density scale for the log-gamma normalization and endpoint logarithm.
     """
     cut = dists["truncated_beta"]
-    assert float(cut.icdf(1.0)) == 0.95
+    np.testing.assert_array_equal(cut.icdf(1.0), precision.type(0.95))
     assert math.isfinite(float(cut.log_prob(cut.icdf(1.0))))
     two_sided = dists["truncated_normal"]
     ends = two_sided.icdf(jnp.array([0.0, 1.0]))
     np.testing.assert_array_equal(ends, [-1.0, 2.0])
     assert bool(jnp.all(jnp.isfinite(two_sided.log_prob(ends))))
-    np.testing.assert_allclose(pr.Beta(1.0, 3.0).log_prob(0.0), math.log(3.0), 1e-12)
-    np.testing.assert_allclose(pr.Beta(2.0, 1.0).log_prob(1.0), math.log(2.0), 1e-12)
+    for a, b, endpoint in ((1.0, 3.0, 0.0), (2.0, 1.0, 1.0)):
+        expected = math.log(max(a, b))
+        np.testing.assert_allclose(
+            pr.Beta(a, b).log_prob(endpoint),
+            expected,
+            rtol=0,
+            atol=float(ulps(32, precision.type(expected))),
+        )
 
 
 def test_icdf_endpoints_and_range(unit_dist):

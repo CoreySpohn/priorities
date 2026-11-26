@@ -10,9 +10,12 @@ from conftest import CHOLESKY, MEAN, WEIGHTS
 
 import priorities as pr
 
-pytestmark = vv.case(
-    "unit-distributions", "cross-code-benchmark", reference_code="scipy"
-)
+pytestmark = [
+    vv.case("unit-distributions", "cross-code-benchmark", reference_code="scipy"),
+    pytest.mark.float64_only(
+        reason="uses float64 SciPy reference tolerances and tails"
+    ),
+]
 
 # Probabilities at which each reference is evaluated: both tails and the bulk.
 LEVELS = np.array([0.03, 0.2, 0.5, 0.8, 0.97])

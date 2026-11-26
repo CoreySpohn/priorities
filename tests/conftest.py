@@ -4,16 +4,13 @@ import gc
 import importlib.util
 import os
 
-# Read once when priorities is imported: invalid parameters raise at run time.
-os.environ.setdefault("PRIORITIES_DEBUG_CHECKS", "1")
-
 import jax
-
-jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp
 import pytest
 from hypothesis import settings
+
+# Read once when priorities is imported: invalid parameters raise at run time.
+os.environ.setdefault("PRIORITIES_DEBUG_CHECKS", "1")
 
 import priorities as pr
 
@@ -33,7 +30,7 @@ MEAN = (0.1, -2.0, 3.0)
 CHOLESKY = ((1.0, 0.0, 0.0), (0.5, 2.0, 0.0), (-0.3, 0.1, 0.7))
 WEIGHTS = (0.2, 0.5, 0.3)
 
-# Every record, built on demand so no distribution exists before x64 is enabled. The
+# Every record, built on demand after the precision lane has been set. The
 # shapes of Beta(0.867, 3.03) are the Kipping (2013) eccentricity fit.
 BUILDERS = {
     "uniform": lambda: pr.Uniform(-1.5, 2.5),
