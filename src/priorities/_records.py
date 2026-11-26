@@ -32,6 +32,9 @@ class Uniform(AbstractDistribution):
     Attributes:
         low: Lower bound, finite.
         high: Upper bound, finite and above ``low``.
+        event_dim: Zero event axes.
+        bounds: Bounded on both sides.
+        has_icdf: Supports an inverse CDF.
     """
 
     low: Array = eqx.field(converter=as_float)
@@ -65,6 +68,9 @@ class LogUniform(AbstractDistribution):
     Attributes:
         low: Lower bound, positive.
         high: Upper bound, finite and above ``low``.
+        event_dim: Zero event axes.
+        bounds: Bounded on both sides.
+        has_icdf: Supports an inverse CDF.
     """
 
     low: Array = eqx.field(converter=as_float)
@@ -111,6 +117,9 @@ class Normal(AbstractDistribution):
     Attributes:
         loc: Mean.
         scale: Standard deviation, positive.
+        event_dim: Zero event axes.
+        bounds: Unbounded support.
+        has_icdf: Supports an inverse CDF.
     """
 
     loc: Array = eqx.field(converter=as_float)
@@ -144,6 +153,9 @@ class LogNormal(AbstractDistribution):
     Attributes:
         loc: Mean of ``log(value)``.
         scale: Standard deviation of ``log(value)``, positive.
+        event_dim: Zero event axes.
+        bounds: Bounded below at zero.
+        has_icdf: Supports an inverse CDF.
     """
 
     loc: Array = eqx.field(converter=as_float)
@@ -190,6 +202,9 @@ class HalfNormal(AbstractDistribution):
 
     Attributes:
         scale: Standard deviation of the underlying normal, positive.
+        event_dim: Zero event axes.
+        bounds: Bounded below at zero.
+        has_icdf: Supports an inverse CDF.
     """
 
     scale: Array = eqx.field(converter=as_float)
@@ -222,6 +237,9 @@ class Rayleigh(AbstractDistribution):
 
     Attributes:
         scale: Mode of the density, positive.
+        event_dim: Zero event axes.
+        bounds: Bounded below at zero.
+        has_icdf: Supports an inverse CDF.
     """
 
     scale: Array = eqx.field(converter=as_float)
@@ -317,8 +335,11 @@ class Beta(AbstractDistribution):
     differentiable in its argument.
 
     Attributes:
-        a: First shape, positive.
-        b: Second shape, positive.
+        concentration1: First shape, positive.
+        concentration0: Second shape, positive.
+        event_dim: Zero event axes.
+        bounds: Bounded below at zero and above at one.
+        has_icdf: Supports an inverse CDF.
     """
 
     concentration1: Array = eqx.field(converter=as_float)

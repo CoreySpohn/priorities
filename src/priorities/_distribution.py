@@ -50,63 +50,115 @@ class AbstractDistribution(eqx.Module):
     def support(self) -> tuple[Array, Array]:
         """Return the bounds ``(low, high)`` of the support.
 
-        Each has shape ``batch + event`` and is infinite on an unbounded side.
         An endpoint belongs to the support when the density there is finite.
-        Both are NaN where the parameters are outside their domain.
+
+        Returns:
+            Lower and upper bounds of shape ``batch + event``, infinite on
+            unbounded sides and NaN where the parameters are outside their domain.
         """
 
     @abstractmethod
     def log_prob(self, value: Array) -> Array:
         """Return the log density against ``d(value)``, reduced over the event.
 
-        The result is exactly ``-inf`` outside the support, with a zero
-        gradient there, and for parameters outside their domain. It is NaN
-        when the value or a parameter is NaN.
+        Args:
+            value: Points of shape ``sample + batch + event`` at which to evaluate
+                the density.
+
+        Returns:
+            Log densities of shape ``sample + batch``. The result is exactly
+            ``-inf`` outside the support, with a zero gradient there, and for
+            parameters outside their domain. It is NaN when the value or a
+            parameter is NaN.
         """
 
     @abstractmethod
     def sample(self, key: Array, sample_shape: tuple[int, ...] = ()) -> Array:
         """Draw values of shape ``sample_shape + batch + event``.
 
-        The dtype is the promotion of the parameters. Draws are NaN for
-        parameters outside their domain.
+        Args:
+            key: PRNG key.
+            sample_shape: Shape of the sample axes preceding the batch and event axes.
+
+        Returns:
+            Draws in the promoted dtype of the parameters, with NaN for parameters
+            outside their domain.
         """
 
     @abstractmethod
     def cdf(self, value: Array) -> Array:
         """Map a value to the unit cube of the event shape.
 
-        For a scalar distribution this is the cumulative distribution function. NaN for
-        parameters outside their domain. Raises ``NotImplementedError`` when
-        the distribution has no such function.
+        For a scalar distribution this is the cumulative distribution function.
+
+        Args:
+            value: Points to map to the unit cube.
+
+        Returns:
+            Unit coordinates with NaN for parameters outside their domain.
+
+        Raises:
+            NotImplementedError: The distribution has no CDF.
         """
 
     @abstractmethod
     def icdf(self, q: Array) -> Array:
         """Map a point of the unit cube to a value: uniform in, the distribution out.
 
-        For a scalar distribution this is the quantile function. It returns the support
-        endpoints at 0 and 1 and NaN outside ``[0, 1]`` or for parameters
-        outside their domain. Raises ``NotImplementedError`` when
-        ``has_icdf`` is false.
+        For a scalar distribution this is the quantile function.
+
+        Args:
+            q: Unit coordinates to map to the support.
+
+        Returns:
+            Values on the support, including exact endpoints at 0 and 1, with
+            NaN outside ``[0, 1]`` or for parameters outside their domain.
+
+        Raises:
+            NotImplementedError: The distribution has no inverse CDF.
         """
 
 
 def as_float(x) -> Array:
-    """Convert a parameter to a floating array, keeping weak types."""
+    """Convert a parameter to a floating array, keeping weak types.
+
+    Args:
+        x: Scalar or array-like distribution parameter.
+
+    Returns:
+        An array with an inexact dtype. Integer and boolean inputs are promoted.
+    """
     x = jnp.asarray(x)
     return x if jnp.issubdtype(x.dtype, jnp.inexact) else x * 1.0
 
 
 def is_valid(dist: AbstractDistribution) -> Array:
-    """Return the batch-shaped mask of parameters inside their domain."""
+    """Check whether the distribution parameters are inside their domain.
+
+    Args:
+        dist: Distribution whose support encodes parameter validity.
+
+    Returns:
+        A boolean mask over the batch, true where all event bounds are valid.
+    """
     low, high = dist.support()
     invalid = jnp.isnan(low) | jnp.isnan(high)
     return ~(invalid.any(-1) if dist.event_dim else invalid)
 
 
 def debug_check(dist: AbstractDistribution, out: Array) -> Array:
-    """Raise at run time for invalid parameters when the debug flag is on."""
+    """Check parameter validity when runtime debugging is enabled.
+
+    Args:
+        dist: Distribution supplying the parameter domain.
+        out: Result to carry the runtime check.
+
+    Returns:
+        The supplied result with the debug check attached when enabled.
+
+    Raises:
+        RuntimeError: Debug checks are enabled and a parameter is invalid.
+    """
     if DEBUG_CHECKS:
         message = f"{type(dist).__name__}: parameters outside their domain"
         out = eqx.error_if(out, ~is_valid(dist), message)
@@ -114,7 +166,15 @@ def debug_check(dist: AbstractDistribution, out: Array) -> Array:
 
 
 def draw_spec(dist: AbstractDistribution, shape: tuple[int, ...]):
-    """Return the shape ``shape + batch`` and dtype of scalar-distribution draws."""
+    """Determine the shape and dtype of scalar-distribution draws.
+
+    Args:
+        dist: Scalar distribution supplying the batch parameters.
+        shape: Sample shape preceding the batch.
+
+    Returns:
+        The shape ``shape + batch`` and promoted parameter dtype.
+    """
     leaves = jax.tree_util.tree_leaves(dist)
     batch = jnp.broadcast_shapes(*(leaf.shape for leaf in leaves))
     return tuple(shape) + batch, jnp.result_type(*leaves)

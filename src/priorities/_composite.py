@@ -74,9 +74,11 @@ class TruncatedDistribution(AbstractDistribution):
     distribution out of the differentiated partition.
 
     Attributes:
-        base: Scalar distribution with an inverse CDF.
+        base_dist: Scalar distribution with an inverse CDF.
         low: Lower cut, or ``None``.
         high: Upper cut, or ``None``.
+        event_dim: Zero event axes.
+        has_icdf: Supports an inverse CDF.
     """
 
     base_dist: AbstractDistribution
@@ -177,6 +179,9 @@ class MultivariateNormal(AbstractDistribution):
         loc: Mean, shape ``(..., d)``.
         scale_tril: Lower-triangular factor of the covariance with a positive
             diagonal, shape ``(..., d, d)``.
+        event_dim: One event axis.
+        bounds: Unbounded support in each coordinate.
+        has_icdf: Supports an inverse map from the unit cube.
     """
 
     loc: Array = eqx.field(converter=as_float)
@@ -273,7 +278,8 @@ class Mixture(AbstractDistribution):
     Attributes:
         mixing_logits: Unnormalized log weights, shape ``(..., K)``. They are
             normalized internally.
-        components: Distribution holding the ``K`` components.
+        component_distribution: Distribution holding the ``K`` components.
+        has_icdf: False because the mixture has no inverse CDF.
     """
 
     mixing_logits: Array = eqx.field(converter=as_float)
