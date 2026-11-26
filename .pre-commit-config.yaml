@@ -1,8 +1,10 @@
 repos:
   - repo: https://github.com/CoreySpohn/hwoutils
-    rev: 7ea5d77
+    rev: 328aa0d
     hooks:
       - id: no-internal-refs
+      - id: precision-guard
+        args: [--enforce]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v6.0.0"
     hooks:
@@ -16,6 +18,23 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+  - repo: https://github.com/jsh9/pydoclint
+    rev: 0.12.0
+    hooks:
+      - id: pydoclint-flake8
+        args:
+          - --select=DOC
+          - --extend-ignore=DOC106,DOC107,DOC108
+          - --style=google
+          - --arg-type-hints-in-docstring=False
+          - --check-return-types=False
+          - --check-yield-types=False
+          - --skip-checking-short-docstrings=False
+          - --skip-checking-private-functions=True
+          - --skip-checking-raises=True
+          - --allow-init-docstring=True
+          - --check-class-attributes=True
+        files: ^src/
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.3
     hooks:

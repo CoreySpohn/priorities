@@ -73,6 +73,7 @@ packages = ["src/priorities"]
 exclude = ["/tests", "/.github"]
 
 [tool.pytest.ini_options]
+precision_guard_enforce = true
 addopts = "-p hwoutils.testing.precision"
 default_precision = "float64"
 filterwarnings = ["error"]
