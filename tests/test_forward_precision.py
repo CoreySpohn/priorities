@@ -9,7 +9,7 @@ import pytest
 from conftest import BUILDERS
 from hwoutils.leaves import canonical
 from hwoutils.testing import assert_precision_closed, precision_pair, ulps
-from jax.scipy.special import ndtri
+from jax.scipy.special import betaln, ndtri
 
 import priorities as pr
 from priorities import _composite, _records
@@ -45,6 +45,8 @@ _USES_NDTRI = {
     ("truncated_upper", "icdf"),
     ("truncated_upper", "sample"),
 }
+
+_BETALN_HAS_WIDE_SELECTS = jax.__version_info__ >= (0, 12, 1)
 
 # Ceilings of the measured |float32 - float64| / (eps32 * max(1, |float64|))
 # on the grid below. Maxima in entry order: 1.474, 1.559, 1.341, 2.083,
@@ -117,6 +119,35 @@ def test_jax_ndtri_stays_in_float32():
         raise
 
 
+class _BetalnFloat64Promotion(AssertionError):
+    """The reproduced float64 select operand in JAX's log beta function."""
+
+
+@pytest.mark.float64_only(reason="audit a float32 primitive inside an x64 process")
+@pytest.mark.xfail(
+    _BETALN_HAS_WIDE_SELECTS,
+    raises=_BetalnFloat64Promotion,
+    strict=True,
+    reason="JAX betaln uses weak float64 select operands for float32 shapes",
+)
+def test_jax_betaln_stays_in_float32():
+    """Trace the real normalization used by Beta log densities."""
+    try:
+        assert_precision_closed(betaln, jnp.float32(0.867), jnp.float32(3.03))
+    except AssertionError as error:
+        code = unwrap(betaln).__code__
+        location = f"{code.co_filename}:{code.co_firstlineno}"
+        if str(error) == f"{location}: precision widened to float64":
+            raise _BetalnFloat64Promotion(str(error)) from error
+        raise
+
+
+def _zero_log_beta(a, b):
+    """Preserve the normalization's broadcast shape and dtype in caller traces."""
+    shape = jnp.broadcast_shapes(a.shape, b.shape)
+    return jnp.zeros(shape, dtype=jnp.result_type(a, b))
+
+
 @pytest.mark.float64_only(reason="audit a float32 forward inside an x64 process")
 @pytest.mark.parametrize(("name", "entry"), CASES)
 def test_forward_follows_input_precision(name, entry, dists, monkeypatch):
@@ -176,6 +207,12 @@ def test_forward_follows_input_precision(name, entry, dists, monkeypatch):
         if (name, entry) in _USES_NDTRI:
             patch.setattr(_records, "ndtri", jnp.zeros_like)
             patch.setattr(_composite, "ndtri", jnp.zeros_like)
+        if (
+            _BETALN_HAS_WIDE_SELECTS
+            and name in {"beta", "truncated_beta"}
+            and entry in {"log_prob", "real_log_prob"}
+        ):
+            patch.setattr(_records, "betaln", _zero_log_beta)
         assert_precision_closed(forward, *narrow)
     if entry == "sample":
         if name == "beta":
