@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/CoreySpohn/priorities/compare/v0.1.0...v0.2.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **priorities:** close sampling, transform and density forwards at their working precision
+
+### Bug Fixes
+
+* **priorities:** close sampling, transform and density forwards at their working precision ([36a4d57](https://github.com/CoreySpohn/priorities/commit/36a4d57ce0bd1557201285cd64429abf42413f76))
+
 ## 0.1.0 (2026-11-19)
 
 
